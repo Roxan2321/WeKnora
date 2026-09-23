@@ -51,6 +51,42 @@ func TestStreamStartCursor_ForceFullFirstAttemptDropsCursor(t *testing.T) {
 	assert.NotNil(t, retry.ConnectorCursor["space_node_times"])
 }
 
+func TestStreamStartCursor_ForceFullFeishuPreservesRecursiveIDsOnly(t *testing.T) {
+	inner := map[string]interface{}{
+		"space_node_times": map[string]map[string]string{
+			"space1": {"nt1": "100"},
+		},
+		"recursive_external_ids": []string{
+			"recursive:bitable:base1",
+			"recursive:docx:doc1",
+		},
+	}
+
+	b, err := json.Marshal(&types.SyncCursor{
+		ConnectorCursor: inner,
+	})
+	require.NoError(t, err)
+
+	ds := &types.DataSource{
+		Type:           types.ConnectorTypeFeishu,
+		LastSyncCursor: types.JSON(b),
+	}
+
+	cur, err := streamStartCursor(
+		ds,
+		true, // forceFull
+		0,    // first attempt
+	)
+	require.NoError(t, err)
+	require.NotNil(t, cur)
+
+	// Full sync must NOT retain the edit-time fast-path.
+	assert.NotContains(t, cur.ConnectorCursor, "space_node_times")
+
+	// But recursive deletion baseline must survive.
+	assert.Contains(t, cur.ConnectorCursor, "recursive_external_ids")
+}
+
 // Incremental sync always resumes from the recorded cursor regardless of attempt.
 func TestStreamStartCursor_IncrementalKeepsCursor(t *testing.T) {
 	ds := &types.DataSource{

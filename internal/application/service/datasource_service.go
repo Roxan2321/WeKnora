@@ -947,6 +947,15 @@ func (s *DataSourceService) applyFetchedItem(
 	if err != nil {
 		var dupErr *types.DuplicateKnowledgeError
 		switch {
+		case errors.Is(err, errDataSourceItemUnchanged):
+			logger.Infof(
+				ctx,
+				"item %q (external_id=%s) unchanged, skipping re-ingest",
+				item.Title,
+				item.ExternalID,
+			)
+			result.Skipped++
+
 		case errors.As(err, &dupErr):
 			// Duplicate file/URL is not a failure — count as skipped.
 			logger.Infof(ctx, "item %q (external_id=%s) already exists, skipping", item.Title, item.ExternalID)
@@ -984,8 +993,43 @@ func (s *DataSourceService) applyFetchedItem(
 // instead of restarting from scratch.
 func streamStartCursor(ds *types.DataSource, forceFull bool, attempt int) (*types.SyncCursor, error) {
 	if forceFull && attempt == 0 {
-		return nil, nil
+		// A fresh full sync normally drops the entire cursor so every source
+		// node is re-fetched. Feishu recursive-link sync is the one exception:
+		// preserve only the previous recursive external-id set so links removed
+		// since the last run can still be reconciled at the end of the full sync.
+		//
+		// Node edit-time maps are deliberately NOT preserved here, therefore the
+		// sync remains a real full fetch.
+		switch ds.Type {
+		case types.ConnectorTypeFeishu,
+			types.ConnectorTypeLark,
+			types.ConnectorTypeFeishuDrive,
+			types.ConnectorTypeLarkDrive:
+
+			cursor, err := ds.ParseSyncCursor()
+			if err != nil || cursor == nil || cursor.ConnectorCursor == nil {
+				return nil, err
+			}
+
+			recursiveIDs, ok := cursor.ConnectorCursor["recursive_external_ids"]
+			if !ok {
+				// Older cursors created before recursive-link support have no
+				// baseline to preserve.
+				return nil, nil
+			}
+
+			return &types.SyncCursor{
+				LastSyncTime: cursor.LastSyncTime,
+				ConnectorCursor: map[string]interface{}{
+					"recursive_external_ids": recursiveIDs,
+				},
+			}, nil
+
+		default:
+			return nil, nil
+		}
 	}
+
 	return ds.ParseSyncCursor()
 }
 
@@ -1270,6 +1314,8 @@ func (s *DataSourceService) validateDataSourceConfig(ctx context.Context, ds *ty
 	return connector.Validate(ctx, config)
 }
 
+var errDataSourceItemUnchanged = errors.New("data source item unchanged")
+
 // ingestItem writes a single FetchedItem into the knowledge base.
 // If a knowledge item with the same external_id already exists, it is deleted first (update = delete + re-create).
 //
@@ -1321,6 +1367,32 @@ func (s *DataSourceService) ingestItem(ctx context.Context, ds *types.DataSource
 			logger.Warnf(ctx, "failed to check existing knowledge for external_id=%s: %v", item.ExternalID, err)
 			// Non-fatal: proceed with creation (may produce duplicate)
 		} else if existing != nil {
+			// Recursive Feishu children are checked on every incremental sync so
+			// child-only edits are not missed. Avoid deleting/re-parsing/re-embedding
+			// them when the exported bytes are actually unchanged.
+			if item.Metadata != nil &&
+				item.Metadata["recursive"] == "true" &&
+				len(item.Content) > 0 &&
+				existing.FileHash != "" {
+
+				incomingHash := calculateBytesHash(item.Content)
+
+				if strings.EqualFold(incomingHash, existing.FileHash) &&
+					existing.FileName == item.FileName &&
+					existing.Title == item.Title {
+
+					logger.Infof(
+						ctx,
+						"recursive item unchanged external_id=%s knowledge=%s hash=%s",
+						item.ExternalID,
+						existing.ID,
+						incomingHash,
+					)
+
+					return false, errDataSourceItemUnchanged
+				}
+			}
+
 			logger.Infof(ctx, "found existing knowledge %s for external_id=%s, deleting for update", existing.ID, item.ExternalID)
 			if err := s.knowledgeService.DeleteKnowledge(ctx, existing.ID); err != nil {
 				logger.Warnf(ctx, "failed to delete existing knowledge %s: %v", existing.ID, err)

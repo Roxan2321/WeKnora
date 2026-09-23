@@ -171,7 +171,7 @@ func (c *Connector) FetchAll(ctx context.Context, config *types.DataSourceConfig
 		return nil, err
 	}
 	client := core.NewClient(feishuConfig)
-	return core.FetchAllEngine(ctx, client, config, resourceIDs, wikiOps{region: c.region})
+	return core.FetchAllEngine(ctx, client, config, resourceIDs, newWikiOps(c.region))
 }
 
 // FetchIncremental performs an incremental sync by comparing node edit times
@@ -185,7 +185,7 @@ func (c *Connector) FetchIncremental(ctx context.Context, config *types.DataSour
 		return nil, nil, err
 	}
 	client := core.NewClient(feishuConfig)
-	ops := wikiOps{region: c.region}
+	ops := newWikiOps(c.region)
 	if len(config.ResourceIDs) == 0 {
 		return nil, nil, errors.New(ops.EmptyResourceIDsError())
 	}
@@ -209,7 +209,7 @@ func (c *Connector) FetchStream(
 		return nil, err
 	}
 	client := core.NewClient(feishuConfig)
-	ops := wikiOps{region: c.region}
+	ops := newWikiOps(c.region)
 	if len(config.ResourceIDs) == 0 {
 		return nil, errors.New(ops.EmptyResourceIDsError())
 	}
@@ -220,7 +220,15 @@ func (c *Connector) FetchStream(
 // region (for URL rendering) and encodes/decodes the wiki cursor wire format
 // (core.FeishuCursor / space_node_times) so the engine can stay format-agnostic.
 type wikiOps struct {
-	region core.Region
+	region         core.Region
+	recursiveState *core.RecursiveState
+}
+
+func newWikiOps(region core.Region) wikiOps {
+	return wikiOps{
+		region:         region,
+		recursiveState: core.NewRecursiveState(),
+	}
 }
 
 func (o wikiOps) List(ctx context.Context, client *core.Client, resourceID string) ([]core.WikiNode, error, error) {
@@ -255,7 +263,206 @@ func (o wikiOps) EditTime(n core.WikiNode) string {
 
 func (o wikiOps) Fetch(ctx context.Context, client *core.Client, n core.WikiNode, resourceID string, multimodal bool) ([]*types.FetchedItem, error) {
 	spaceID, _ := parseWikiResourceID(resourceID)
-	return fetchNodeContent(ctx, client, n, spaceID, resourceID, multimodal, o.region)
+
+	items, err := fetchNodeContent(
+		ctx,
+		client,
+		n,
+		spaceID,
+		resourceID,
+		multimodal,
+		o.region,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if !core.RecursiveLinksEnabled() {
+		return items, nil
+	}
+
+	if n.ObjType != "bitable" && n.ObjType != "sheet" {
+		return items, nil
+	}
+
+	container := core.LinkedResource{
+		Type:  n.ObjType,
+		Token: n.ObjToken,
+		URL:   o.region.WikiURL(n.NodeToken),
+	}
+
+	children, derr := core.DiscoverDirectLinkedResources(
+		ctx,
+		client,
+		container,
+	)
+	if derr != nil {
+		if o.recursiveState != nil {
+			o.recursiveState.MarkIncomplete()
+		}
+
+		logger.Warnf(
+			ctx,
+			"[FeishuRecursive] discovery failed for wiki node=%s type=%s: %v",
+			n.NodeToken,
+			n.ObjType,
+			derr,
+		)
+
+		items = append(items, &types.FetchedItem{
+			ExternalID:       n.NodeToken + "#recursive-discovery-error",
+			Title:            n.Title,
+			SourceResourceID: resourceID,
+			Metadata: core.FeishuErrorItemMeta(
+				derr,
+				map[string]string{
+					"channel":       types.ChannelFeishu,
+					"recursive":     "true",
+					"node_token":    n.NodeToken,
+					"obj_token":     n.ObjToken,
+					"obj_type":      n.ObjType,
+					"failure_stage": "recursive_discovery",
+				},
+			),
+		})
+
+		return items, nil
+	}
+
+	if len(children) == 0 {
+		return items, nil
+	}
+
+	recursiveItems, rerr := core.FetchRecursiveLinkedResources(
+		ctx,
+		client,
+		children,
+		core.RecursiveFetchOptions{
+			SourceResourceID: resourceID,
+			ParentExternalID: n.NodeToken,
+			Channel:          types.ChannelFeishu,
+			Multimodal:       multimodal,
+			MaxDepth:         core.RecursiveMaxDepth(),
+			State:            o.recursiveState,
+			SeedVisited: []core.LinkedResource{
+				container,
+			},
+		},
+	)
+	if rerr != nil {
+		return nil, rerr
+	}
+
+	items = append(items, recursiveItems...)
+
+	logger.Infof(
+		ctx,
+		"[FeishuRecursive] wiki node=%s type=%s discovered=%d emitted=%d",
+		n.NodeToken,
+		n.ObjType,
+		len(children),
+		len(recursiveItems),
+	)
+
+	return items, nil
+}
+
+// RefreshUnchanged 在父 Wiki 节点本身未变化时，仅扫描它引用的
+// Bitable/Sheet 子资源。父资源本身不会再次 Emit，因此不会因为递归检查
+// 导致一级表每次增量同步都被删除重建。
+func (o wikiOps) RefreshUnchanged(
+	ctx context.Context,
+	client *core.Client,
+	n core.WikiNode,
+	resourceID string,
+	multimodal bool,
+) ([]*types.FetchedItem, error) {
+	if !core.RecursiveLinksEnabled() {
+		return nil, nil
+	}
+
+	if n.ObjType != "bitable" && n.ObjType != "sheet" {
+		return nil, nil
+	}
+
+	container := core.LinkedResource{
+		Type:  n.ObjType,
+		Token: n.ObjToken,
+		URL:   o.region.WikiURL(n.NodeToken),
+	}
+
+	children, err := core.DiscoverDirectLinkedResources(
+		ctx,
+		client,
+		container,
+	)
+	if err != nil {
+		if o.recursiveState != nil {
+			o.recursiveState.MarkIncomplete()
+		}
+
+		logger.Warnf(
+			ctx,
+			"[FeishuRecursive] unchanged parent discovery failed node=%s type=%s: %v",
+			n.NodeToken,
+			n.ObjType,
+			err,
+		)
+
+		return []*types.FetchedItem{
+			{
+				ExternalID:       n.NodeToken + "#recursive-discovery-error",
+				Title:            n.Title,
+				SourceResourceID: resourceID,
+				Metadata: core.FeishuErrorItemMeta(
+					err,
+					map[string]string{
+						"channel":       types.ChannelFeishu,
+						"recursive":     "true",
+						"node_token":    n.NodeToken,
+						"obj_token":     n.ObjToken,
+						"obj_type":      n.ObjType,
+						"failure_stage": "recursive_discovery",
+					},
+				),
+			},
+		}, nil
+	}
+
+	if len(children) == 0 {
+		return nil, nil
+	}
+
+	items, err := core.FetchRecursiveLinkedResources(
+		ctx,
+		client,
+		children,
+		core.RecursiveFetchOptions{
+			SourceResourceID: resourceID,
+			ParentExternalID: n.NodeToken,
+			Channel:          types.ChannelFeishu,
+			Multimodal:       multimodal,
+			MaxDepth:         core.RecursiveMaxDepth(),
+			State:            o.recursiveState,
+			SeedVisited: []core.LinkedResource{
+				container,
+			},
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Infof(
+		ctx,
+		"[FeishuRecursive] unchanged wiki parent node=%s type=%s discovered=%d emitted=%d",
+		n.NodeToken,
+		n.ObjType,
+		len(children),
+		len(items),
+	)
+
+	return items, nil
 }
 
 func (o wikiOps) ListFailureItems(resourceID string, partial error) []types.FetchedItem {
@@ -265,6 +472,10 @@ func (o wikiOps) ListFailureItems(resourceID string, partial error) []types.Fetc
 		return appendWikiNodeListFailureItems(nil, spaceID, resourceID, pe.Failures)
 	}
 	return nil
+}
+
+func (o wikiOps) RecursiveSyncState() *core.RecursiveState {
+	return o.recursiveState
 }
 
 func (o wikiOps) ResourceNoun() string { return "nodes" }
@@ -277,11 +488,26 @@ func (o wikiOps) DecodeCursorTimes(m map[string]interface{}) map[string]map[stri
 	var prev core.FeishuCursor
 	b, _ := json.Marshal(m)
 	_ = json.Unmarshal(b, &prev)
+
+	if o.recursiveState != nil {
+		o.recursiveState.LoadPrevious(prev.RecursiveExternalIDs)
+	}
+
 	return prev.SpaceNodeTimes
 }
 
 func (o wikiOps) EncodeCursor(times map[string]map[string]string, lastSync time.Time) *types.SyncCursor {
-	fc := core.FeishuCursor{LastSyncTime: lastSync, SpaceNodeTimes: times}
+	var recursiveIDs []string
+	if o.recursiveState != nil {
+		recursiveIDs = o.recursiveState.CursorIDs()
+	}
+
+	fc := core.FeishuCursor{
+		LastSyncTime:         lastSync,
+		SpaceNodeTimes:       times,
+		RecursiveExternalIDs: recursiveIDs,
+	}
+
 	m := make(map[string]interface{})
 	b, _ := json.Marshal(fc)
 	_ = json.Unmarshal(b, &m)
