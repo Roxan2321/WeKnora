@@ -236,7 +236,7 @@ func (c *DriveConnector) FetchAll(
 		return nil, err
 	}
 	client := core.NewClient(feishuConfig)
-	return core.FetchAllEngine(ctx, client, config, resourceIDs, driveOps{region: c.region})
+	return core.FetchAllEngine(ctx, client, config, resourceIDs, newDriveOps(c.region))
 }
 
 // FetchIncremental performs an incremental sync by comparing file modified_time
@@ -251,7 +251,7 @@ func (c *DriveConnector) FetchIncremental(
 		return nil, nil, err
 	}
 	client := core.NewClient(feishuConfig)
-	ops := driveOps{region: c.region}
+	ops := newDriveOps(c.region)
 	if len(config.ResourceIDs) == 0 {
 		return nil, nil, errors.New(ops.EmptyResourceIDsError())
 	}
@@ -275,7 +275,7 @@ func (c *DriveConnector) FetchStream(
 		return nil, err
 	}
 	client := core.NewClient(feishuConfig)
-	ops := driveOps{region: c.region}
+	ops := newDriveOps(c.region)
 	if len(config.ResourceIDs) == 0 {
 		return nil, errors.New(ops.EmptyResourceIDsError())
 	}
@@ -286,7 +286,15 @@ func (c *DriveConnector) FetchStream(
 // carries the region (for channel + URL) and encodes/decodes the Drive cursor
 // wire format (core.FeishuDriveCursor / file_times) so the engine stays format-agnostic.
 type driveOps struct {
-	region core.Region
+	region         core.Region
+	recursiveState *core.RecursiveState
+}
+
+func newDriveOps(region core.Region) driveOps {
+	return driveOps{
+		region:         region,
+		recursiveState: core.NewRecursiveState(),
+	}
 }
 
 func (o driveOps) List(ctx context.Context, client *core.Client, resourceID string) ([]core.DriveFile, error, error) {
@@ -306,8 +314,210 @@ func (o driveOps) Title(n core.DriveFile) string    { return n.Name }
 func (o driveOps) ObjType(n core.DriveFile) string  { return n.Type }
 func (o driveOps) EditTime(n core.DriveFile) string { return n.ModifiedTime }
 
-func (o driveOps) Fetch(ctx context.Context, client *core.Client, n core.DriveFile, resourceID string, multimodal bool) ([]*types.FetchedItem, error) {
-	return fetchDriveFileContent(ctx, client, n, resourceID, multimodal, o.region)
+func (o driveOps) Fetch(
+	ctx context.Context,
+	client *core.Client,
+	n core.DriveFile,
+	resourceID string,
+	multimodal bool,
+) ([]*types.FetchedItem, error) {
+	items, err := fetchDriveFileContent(
+		ctx,
+		client,
+		n,
+		resourceID,
+		multimodal,
+		o.region,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if !core.RecursiveLinksEnabled() {
+		return items, nil
+	}
+
+	if n.Type != "bitable" && n.Type != "sheet" {
+		return items, nil
+	}
+
+	container := core.LinkedResource{
+		Type:  n.Type,
+		Token: n.Token,
+		URL:   n.URL,
+	}
+
+	children, derr := core.DiscoverDirectLinkedResources(
+		ctx,
+		client,
+		container,
+	)
+	if derr != nil {
+		if o.recursiveState != nil {
+			o.recursiveState.MarkIncomplete()
+		}
+
+		logger.Warnf(
+			ctx,
+			"[FeishuRecursive] Drive discovery failed file=%s type=%s: %v",
+			n.Token,
+			n.Type,
+			derr,
+		)
+
+		items = append(items, &types.FetchedItem{
+			ExternalID:       n.Token + "#recursive-discovery-error",
+			Title:            n.Name,
+			SourceResourceID: resourceID,
+			Metadata: core.FeishuErrorItemMeta(
+				derr,
+				map[string]string{
+					"channel":       o.channel(),
+					"recursive":     "true",
+					"file_token":    n.Token,
+					"obj_token":     n.Token,
+					"obj_type":      n.Type,
+					"failure_stage": "recursive_discovery",
+				},
+			),
+		})
+
+		return items, nil
+	}
+
+	if len(children) == 0 {
+		return items, nil
+	}
+
+	recursiveItems, rerr := core.FetchRecursiveLinkedResources(
+		ctx,
+		client,
+		children,
+		core.RecursiveFetchOptions{
+			SourceResourceID: resourceID,
+			ParentExternalID: n.Token,
+			Channel:          o.channel(),
+			Multimodal:       multimodal,
+			MaxDepth:         core.RecursiveMaxDepth(),
+			State:            o.recursiveState,
+			SeedVisited: []core.LinkedResource{
+				container,
+			},
+		},
+	)
+	if rerr != nil {
+		return nil, rerr
+	}
+
+	items = append(items, recursiveItems...)
+
+	logger.Infof(
+		ctx,
+		"[FeishuRecursive] Drive file=%s type=%s discovered=%d emitted=%d",
+		n.Token,
+		n.Type,
+		len(children),
+		len(recursiveItems),
+	)
+
+	return items, nil
+}
+
+// RefreshUnchanged 保证父 Bitable/Sheet 本身未变化时，仍检查它链接到的
+// 二级/三级资源，但不会重新 Emit 当前父文件。
+func (o driveOps) RefreshUnchanged(
+	ctx context.Context,
+	client *core.Client,
+	n core.DriveFile,
+	resourceID string,
+	multimodal bool,
+) ([]*types.FetchedItem, error) {
+	if !core.RecursiveLinksEnabled() {
+		return nil, nil
+	}
+
+	if n.Type != "bitable" && n.Type != "sheet" {
+		return nil, nil
+	}
+
+	container := core.LinkedResource{
+		Type:  n.Type,
+		Token: n.Token,
+		URL:   n.URL,
+	}
+
+	children, err := core.DiscoverDirectLinkedResources(
+		ctx,
+		client,
+		container,
+	)
+	if err != nil {
+		if o.recursiveState != nil {
+			o.recursiveState.MarkIncomplete()
+		}
+
+		logger.Warnf(
+			ctx,
+			"[FeishuRecursive] unchanged Drive parent discovery failed file=%s type=%s: %v",
+			n.Token,
+			n.Type,
+			err,
+		)
+
+		return []*types.FetchedItem{
+			{
+				ExternalID:       n.Token + "#recursive-discovery-error",
+				Title:            n.Name,
+				SourceResourceID: resourceID,
+				Metadata: core.FeishuErrorItemMeta(
+					err,
+					map[string]string{
+						"channel":       o.channel(),
+						"recursive":     "true",
+						"file_token":    n.Token,
+						"obj_token":     n.Token,
+						"obj_type":      n.Type,
+						"failure_stage": "recursive_discovery",
+					},
+				),
+			},
+		}, nil
+	}
+
+	if len(children) == 0 {
+		return nil, nil
+	}
+
+	items, err := core.FetchRecursiveLinkedResources(
+		ctx,
+		client,
+		children,
+		core.RecursiveFetchOptions{
+			SourceResourceID: resourceID,
+			ParentExternalID: n.Token,
+			Channel:          o.channel(),
+			Multimodal:       multimodal,
+			MaxDepth:         core.RecursiveMaxDepth(),
+			State:            o.recursiveState,
+			SeedVisited: []core.LinkedResource{
+				container,
+			},
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Infof(
+		ctx,
+		"[FeishuRecursive] unchanged Drive parent file=%s type=%s discovered=%d emitted=%d",
+		n.Token,
+		n.Type,
+		len(children),
+		len(items),
+	)
+
+	return items, nil
 }
 
 func (o driveOps) ListFailureItems(resourceID string, partial error) []types.FetchedItem {
@@ -316,6 +526,10 @@ func (o driveOps) ListFailureItems(resourceID string, partial error) []types.Fet
 		return appendDriveFileListFailureItems(nil, resourceID, o.channel(), pe.Failures)
 	}
 	return nil
+}
+
+func (o driveOps) RecursiveSyncState() *core.RecursiveState {
+	return o.recursiveState
 }
 
 func (o driveOps) channel() string {
@@ -335,11 +549,26 @@ func (o driveOps) DecodeCursorTimes(m map[string]interface{}) map[string]map[str
 	var prev core.FeishuDriveCursor
 	b, _ := json.Marshal(m)
 	_ = json.Unmarshal(b, &prev)
+
+	if o.recursiveState != nil {
+		o.recursiveState.LoadPrevious(prev.RecursiveExternalIDs)
+	}
+
 	return prev.FileTimes
 }
 
 func (o driveOps) EncodeCursor(times map[string]map[string]string, lastSync time.Time) *types.SyncCursor {
-	fc := core.FeishuDriveCursor{LastSyncTime: lastSync, FileTimes: times}
+	var recursiveIDs []string
+	if o.recursiveState != nil {
+		recursiveIDs = o.recursiveState.CursorIDs()
+	}
+
+	fc := core.FeishuDriveCursor{
+		LastSyncTime:         lastSync,
+		FileTimes:            times,
+		RecursiveExternalIDs: recursiveIDs,
+	}
+
 	m := make(map[string]interface{})
 	b, _ := json.Marshal(fc)
 	_ = json.Unmarshal(b, &m)

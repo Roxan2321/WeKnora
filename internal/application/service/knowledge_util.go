@@ -103,6 +103,13 @@ func isValidURL(url string) bool {
 }
 
 // calculateFileHash calculates MD5 hash of a file
+// calculateBytesHash calculates the same MD5 representation used by
+// calculateFileHash, but directly from in-memory connector content.
+func calculateBytesHash(data []byte) string {
+	sum := md5.Sum(data)
+	return hex.EncodeToString(sum[:])
+}
+
 func calculateFileHash(file *multipart.FileHeader) (string, error) {
 	f, err := file.Open()
 	if err != nil {
