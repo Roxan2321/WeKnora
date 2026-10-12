@@ -1,0 +1,8 @@
+ARG PG_IMAGE=docker.io/paradedb/paradedb:v0.22.6-pg17
+FROM ${PG_IMAGE}
+COPY pg_textsearch-pg17-v1.3.1.tar.gz /tmp/pg_textsearch-pg17-v1.3.1.tar.gz
+RUN tar -xzf /tmp/pg_textsearch-pg17-v1.3.1.tar.gz -C /tmp \
+    && cp /tmp/pg17/pg_textsearch.control /tmp/pg17/pg_textsearch--*.sql /usr/share/postgresql/17/extension/ \
+    && cp /tmp/pg17/pg_textsearch.so /usr/lib/postgresql/17/lib/ \
+    && ldd /usr/lib/postgresql/17/lib/pg_textsearch.so
+CMD ["postgres", "-c", "shared_preload_libraries=pg_textsearch"]
