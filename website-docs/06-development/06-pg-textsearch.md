@@ -80,6 +80,14 @@ Dockerfile 允许通过 `PG_IMAGE` 构建参数选择可信的同版镜像源。
 测试连接使用 `sslmode=require`；它加密链路但不验证服务器身份，正式部署应配置 CA 并
 使用 `verify-full`。本次未切换线上连接、迁移业务数据或运行压力测试。
 
+同日对新购买的上海包年 RDS PostgreSQL 17.11 再次做独立功能验收。
+补齐 pg_textsearch 预加载并重启后，经公网 TLS 1.3 在新实例的
+`weknora_textsearch_test` 运行现有 repository 与 container 集成测试，
+初始化至迁移 111（dirty=false）、单条/批量/无向量写入、中文关键词、1024维向量、
+作用域过滤、复制、删除及历史回填均通过，BM25 和 1024维 HNSW 索引 valid/ready。
+扩展版本与上述按量实例一致。本次只使用合成测试数据，未切换线上 WeKnora，
+未迁移业务数据、调用模型或在包年实例重跑大规模压力测试。
+
 ## 隔离压测入口
 
 `TestRDSRetrievalLoad` 是显式开启的合成数据压测，仅接受数据库名
