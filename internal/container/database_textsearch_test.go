@@ -23,10 +23,14 @@ func TestInitDatabaseTextSearch(t *testing.T) {
 	require.Equal(t, "weknora_textsearch_test", strings.TrimPrefix(u.Path, "/"))
 	require.NotNil(t, u.User)
 	password, _ := u.User.Password()
+	sslMode := u.Query().Get("sslmode")
+	if sslMode == "" {
+		sslMode = "disable"
+	}
 	for key, value := range map[string]string{
 		"DB_DRIVER": "postgres", "DB_HOST": u.Hostname(), "DB_PORT": u.Port(),
 		"DB_USER": u.User.Username(), "DB_PASSWORD": password, "DB_NAME": "weknora_textsearch_test",
-		"DB_SSLMODE": "disable", "POSTGRES_SEARCH_EXTENSION": "pg_textsearch",
+		"DB_SSLMODE": sslMode, "POSTGRES_SEARCH_EXTENSION": "pg_textsearch",
 		"RETRIEVE_DRIVER": "postgres", "AUTO_MIGRATE": "true", "AUTO_RECOVER_DIRTY": "false",
 	} {
 		t.Setenv(key, value)

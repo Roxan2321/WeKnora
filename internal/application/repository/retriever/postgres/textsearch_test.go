@@ -113,6 +113,19 @@ func TestTextSearchRetrievalAndBackfill(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result[0].Results, 1)
 	require.Equal(t, content, result[0].Results[0].Content)
+	// Match the deployed knowledge base dimension without calling an embedding model.
+	vector1024 := make([]float32, 1024)
+	vector1024[0] = 1
+	require.NoError(t, repo.Save(ctx, &types.IndexInfo{
+		SourceID: "vector-1024", ChunkID: "vector-1024", KnowledgeBaseID: "kb-1024",
+		Content: content, IsEnabled: true,
+	}, map[string]any{"embedding": map[string][]float32{"vector-1024": vector1024}}))
+	result, err = repo.VectorRetrieve(ctx, types.RetrieveParams{
+		Embedding: vector1024, TopK: 1, KnowledgeBaseIDs: []string{"kb-1024"},
+	})
+	require.NoError(t, err)
+	require.Len(t, result[0].Results, 1)
+	require.Equal(t, "vector-1024", result[0].Results[0].SourceID)
 	require.NoError(t, repo.DeleteByChunkIDList(ctx, []string{"copied"}, 3, "document"))
 	result, err = repo.KeywordsRetrieve(ctx, params)
 	require.NoError(t, err)

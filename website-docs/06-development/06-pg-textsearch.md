@@ -72,3 +72,10 @@ Dockerfile 允许通过 `PG_IMAGE` 构建参数选择可信的同版镜像源。
 2026-10-12 在独立 PostgreSQL 17.9 / pg_textsearch 1.3.1 / pgvector 0.8.1 环境验证以上功能；
 旧 ParadeDB 0.22.6 路径与从迁移 90 升级到 111 的共享空间保留测试也通过。
 这属于功能验证，尚未覆盖托管 RDS 的实际权限、网络延迟或大规模负载。
+
+2026-10-13 从腾讯云 CVM 经公网 TLS 1.3 连接阿里云按量付费 RDS PostgreSQL 17.11，
+在新建的 `weknora_textsearch_test` 中完成迁移 1–111、应用数据库初始化、中文 BM25、
+知识库/文档/标签过滤、禁用条目、关键词无向量写入、1024 维向量读写、复制、删除和历史回填测试。
+目标扩展为 `pg_textsearch 1.3.1`、`vector 0.8.0.2`、`pg_trgm 1.6`、`uuid-ossp 1.1`。
+测试连接使用 `sslmode=require`；它加密链路但不验证服务器身份，正式部署应配置 CA 并
+使用 `verify-full`。本次未切换线上连接、迁移业务数据或运行压力测试。
