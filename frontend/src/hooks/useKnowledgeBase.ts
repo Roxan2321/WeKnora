@@ -10,6 +10,7 @@ import {
 import { knowledgeStore } from "@/stores/knowledge";
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
+import { manualDraftContent } from '@/utils/manualDraftContent';
 
 export default function (knowledgeBaseId?: string) {
   const usemenuStore = knowledgeStore();
@@ -31,6 +32,7 @@ export default function (knowledgeBaseId?: string) {
     summary_status: "",
     parse_status: "",
     error_message: "",
+	manualContent: null as string | null,
 	custom_metadata: {} as Record<string, unknown>,
     chunkLoading: false,
     chunkLoadError: "",
@@ -39,6 +41,7 @@ export default function (knowledgeBaseId?: string) {
   let knowledgeListGeneration = 0;
   let chunkRequestGeneration = 0;
   let activeKnowledgeId = '';
+  let detailRequestGeneration = 0;
   const getKnowled = (
     query: ListKnowledgeFilesParams = { page: 1, page_size: 35 },
     kbId?: string,
@@ -90,6 +93,7 @@ export default function (knowledgeBaseId?: string) {
     }
   };
   const getCardDetails = (item: any) => {
+    const requestGeneration = ++detailRequestGeneration;
     activeKnowledgeId = item.id;
     chunkRequestGeneration++;
     Object.assign(details, {
@@ -105,12 +109,16 @@ export default function (knowledgeBaseId?: string) {
       summary_status: "",
       parse_status: "",
       error_message: "",
+      manualContent: null,
+      total: 0,
+      chunkLoading: true,
 	  custom_metadata: {},
       chunkLoadError: "",
       tags: item?.tags ? [...item.tags] : [],
     });
     getKnowledgeDetails(item.id)
       .then((result: any) => {
+        if (requestGeneration !== detailRequestGeneration || activeKnowledgeId !== item.id) return;
         if (result.success && result.data) {
           const { data } = result;
           Object.assign(details, {
@@ -125,13 +133,25 @@ export default function (knowledgeBaseId?: string) {
             summary_status: data.summary_status || '',
             parse_status: data.parse_status || '',
             error_message: data.error_message || '',
+            manualContent: manualDraftContent(data),
 			custom_metadata: data.custom_metadata || {},
             tags: data.tags?.length ? data.tags : (item?.tags || []),
           });
+          if (details.manualContent !== null) {
+            details.chunkLoading = false;
+          } else {
+            getfDetails(item.id, 1);
+          }
+        } else {
+          details.chunkLoading = false;
+          details.chunkLoadError = result?.message || result?.error?.message || t('knowledgeBase.chunkLoadFailed');
         }
       })
-      .catch(() => {});
-    getfDetails(item.id, 1);
+      .catch((error: any) => {
+        if (requestGeneration !== detailRequestGeneration || activeKnowledgeId !== item.id) return;
+        details.chunkLoading = false;
+        details.chunkLoadError = error?.message || t('knowledgeBase.chunkLoadFailed');
+      });
   };
   
   const getfDetails = (id: string, page: number) => {

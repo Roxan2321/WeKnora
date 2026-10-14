@@ -36,7 +36,7 @@ const authStore = useAuthStore();
 // 传下来（包含 KB creator / Admin / 组织分享 editor 三种来源），未
 // 传时按更严格的 Admin 兜底，避免 Viewer 看到一个会 403 的入口。
 const canDeleteGeneratedQuestion = computed(() => {
-  if (props.canEditKB === true) return true;
+  if (typeof props.canEditKB === 'boolean') return props.canEditKB;
   return authStore.hasRole('admin');
 });
 const canEditContent = canDeleteGeneratedQuestion;
@@ -716,6 +716,9 @@ renderer.code = function ({ text, lang }) {
 };
 // 监听 chunks 变化，自动更新合并内容（已改为 computed 属性）
 const mergedContent = computed(() => {
+  if (typeof props.details?.manualContent === 'string') {
+    return props.details.manualContent;
+  }
   const newChunks = props.details?.md;
   if (newChunks && newChunks.length > 0) {
     return mergeChunks(newChunks);
@@ -818,7 +821,7 @@ const runMarkdownPostRenderPipeline = async () => {
   await renderMermaidDiagrams();
 };
 
-watch(() => props.details.md, () => {
+watch(() => [props.details.md, props.details.manualContent], () => {
   runMarkdownPostRenderPipeline();
 }, { immediate: true, deep: true, flush: 'post' })
 
@@ -1826,7 +1829,7 @@ const handleChunkPageChange = (pageInfo: { current: number }) => {
                 class="view-mode-btn">
                 {{ $t('knowledgeBase.viewMerged') }}
               </t-button>
-              <t-button size="small" :variant="viewMode === 'chunks' ? 'base' : 'outline'"
+              <t-button v-if="typeof details.manualContent !== 'string'" size="small" :variant="viewMode === 'chunks' ? 'base' : 'outline'"
                 :theme="viewMode === 'chunks' ? 'primary' : 'default'" @click="viewMode = 'chunks'"
                 class="view-mode-btn">
                 {{ $t('knowledgeBase.viewChunks') }}
