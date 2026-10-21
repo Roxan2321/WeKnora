@@ -69,7 +69,7 @@ func main() {
 		fail(err)
 		_, err = db.Exec(clean, "DELETE FROM auth_tokens WHERE user_id=$1", uid)
 		fail(err)
-		_, err = db.Exec(clean, "DELETE FROM audit_logs WHERE user_id=$1", uid)
+		_, err = db.Exec(clean, "DELETE FROM audit_logs WHERE actor_user_id=$1", uid)
 		if err != nil {
 			fmt.Println("QA audit cleanup skipped: schema field differs")
 		}
