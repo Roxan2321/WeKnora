@@ -160,6 +160,12 @@ func ValidateProcessOverrides(
 	if overrides == nil {
 		return nil
 	}
+	if kb.HasCompanyModels() && !types.IsSystemAdminFromContext(ctx) && overrides.VLMConfig != nil {
+		v := overrides.VLMConfig
+		if v.ModelID != "" && v.ModelID != types.CompanyVisionModelID || v.APIKey != "" || v.BaseURL != "" || v.ModelName != "" {
+			return werrors.NewForbiddenError("该知识库的视觉模型由公司统一配置")
+		}
+	}
 
 	hasImage := false
 	hasAudio := false

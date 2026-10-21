@@ -204,9 +204,10 @@
 
       <!-- 模型配置 -->
       <div v-show="currentSection === 'models'" class="section">
+        <p v-if="modelsLocked" class="form-tip">模型由公司统一配置：向量 qwen3.7-text-embedding-flash、摘要 qwen3.7-flash、视觉 qwen3-vl-plus，无需填写密钥。</p>
         <KBModelConfig
           ref="modelConfigRef"
-          v-if="formData"
+          v-if="formData && !modelsLocked"
           :config="formData.modelConfig"
           :has-files="hasFiles"
           :wiki-enabled="formData.indexingStrategy?.wikiEnabled"
@@ -328,6 +329,7 @@
                 <ModelSelector
                   model-type="VLLM"
                   :selected-model-id="formData.multimodalConfig.vllmModelId"
+                  :disabled="modelsLocked"
                   :all-models="allModels"
                   @update:selected-model-id="handleMultimodalVLLMChange"
                   @add-model="handleAddVLLMModel"
@@ -498,6 +500,8 @@ import { useModalShell } from '@/composables/useModalShell'
 import SettingsModalShell from '@/components/SettingsModalShell.vue'
 import {
   createKnowledgeBase,
+  getKBModelPolicy,
+  type KBModelPolicy,
   getKnowledgeBaseById,
   listKnowledgeFiles,
   updateKnowledgeBase,
@@ -579,6 +583,11 @@ onBeforeUnmount(() => {
 const saving = ref(false)
 const loading = ref(false)
 const allModels = ref<any[]>([])
+const companyModelPolicy = ref<KBModelPolicy | null>(null)
+const modelsLocked = computed(() =>
+  (editorMode.value === 'create' && companyModelPolicy.value?.enabled) ||
+  (!authStore.isSystemAdmin && formData.value?.modelConfig.embeddingModelId === 'builtin-company-embedding')
+)
 const hasFiles = ref(false)
 // AI-generated knowledge-base description (edit mode only). Kept outside
 // formData because it is never submitted: the backend owns it.
@@ -741,6 +750,13 @@ const kbCreateNeedsEmbedding = computed(() => {
 
 const applyDefaultModelsIfEmpty = () => {
   if (!formData.value || editorMode.value !== 'create') return
+  if (companyModelPolicy.value?.enabled) {
+    formData.value.modelConfig.llmModelId = companyModelPolicy.value.summary_model_id
+    formData.value.modelConfig.embeddingModelId = companyModelPolicy.value.embedding_model_id
+    formData.value.multimodalConfig.enabled = true
+    formData.value.multimodalConfig.vllmModelId = companyModelPolicy.value.vision_model_id
+    return
+  }
   const chatModelId = selectInitialModelId(allModels.value, 'KnowledgeQA')
   const embeddingModelId = selectInitialModelId(allModels.value, 'Embedding')
   if (!formData.value.modelConfig.llmModelId && chatModelId) {
@@ -828,7 +844,7 @@ const initFormData = (type: 'document' | 'faq' = 'document') => {
       customInstructions: ''
     },
     questionGenerationConfig: {
-      enabled: true,
+      enabled: false,
       questionCount: 3,
       customInstructions: ''
     },
@@ -1128,6 +1144,10 @@ const handleParserEngineRulesUpdate = (rules: any[]) => {
 }
 
 const handleMultimodalToggle = () => {
+  if (formData.value && modelsLocked.value && formData.value.multimodalConfig.enabled) {
+    formData.value.multimodalConfig.vllmModelId = 'builtin-company-vision'
+    return
+  }
   if (formData.value && !formData.value.multimodalConfig.enabled) {
     formData.value.multimodalConfig.vllmModelId = ''
   }
@@ -1682,7 +1702,9 @@ watch(() => props.visible, async (newVal) => {
     }
     
     // 加载模型列表与空间默认存储引擎（创建 KB 时即使用，不依赖是否打开「存储引擎」Tab）
-    await Promise.all([loadAllModels(), loadTenantDefaultStorageProvider()])
+    await Promise.all([loadAllModels(), loadTenantDefaultStorageProvider(), getKBModelPolicy().then(result => {
+      companyModelPolicy.value = result.data
+    })])
 
     if (generation !== kbEditorLoadGeneration || !props.visible) return
     

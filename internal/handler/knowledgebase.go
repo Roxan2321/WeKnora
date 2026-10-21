@@ -392,6 +392,15 @@ func (h *KnowledgeBaseHandler) HybridSearch(c *gin.Context) {
 // @Security     Bearer
 // @Security     ApiKeyAuth
 // @Router       /knowledge-bases [post]
+func (h *KnowledgeBaseHandler) GetModelPolicy(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
+		"enabled": types.CompanyKBModelsEnabled(),
+		"embedding_model_id": types.CompanyEmbeddingModelID,
+		"summary_model_id": types.CompanySummaryModelID,
+		"vision_model_id": types.CompanyVisionModelID,
+	}})
+}
+
 func (h *KnowledgeBaseHandler) CreateKnowledgeBase(c *gin.Context) {
 	ctx := c.Request.Context()
 

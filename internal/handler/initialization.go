@@ -259,6 +259,15 @@ func (h *InitializationHandler) UpdateKBConfig(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
+	if kb.HasCompanyModels() && !types.IsSystemAdminFromContext(ctx) {
+		if req.LLMModelID != kb.SummaryModelID ||
+			(req.EmbeddingModelID != "" && req.EmbeddingModelID != kb.EmbeddingModelID) ||
+			(req.VLMConfig != nil && (req.VLMConfig.ModelID != "" && req.VLMConfig.ModelID != types.CompanyVisionModelID ||
+				req.VLMConfig.APIKey != "" || req.VLMConfig.BaseURL != "" || req.VLMConfig.ModelName != "")) {
+			c.Error(errors.NewForbiddenError("该知识库使用公司统一模型，只有系统管理员可以修改模型绑定"))
+			return
+		}
+	}
 
 	// 检查Embedding模型是否可以修改
 	if kb.EmbeddingModelID != "" && req.EmbeddingModelID != "" && kb.EmbeddingModelID != req.EmbeddingModelID {
@@ -577,6 +586,10 @@ func (h *InitializationHandler) InitializeByKB(c *gin.Context) {
 	kb, err := h.getKnowledgeBaseForInitialization(ctx, kbIdStr)
 	if err != nil {
 		c.Error(err)
+		return
+	}
+	if kb.HasCompanyModels() && !types.IsSystemAdminFromContext(ctx) {
+		c.Error(errors.NewForbiddenError("公司统一模型不能通过初始化接口重新配置"))
 		return
 	}
 

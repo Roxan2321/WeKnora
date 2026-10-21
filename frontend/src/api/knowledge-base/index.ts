@@ -5,6 +5,17 @@ import { buildListKnowledgeFilesQuery } from './knowledgeFileListQuery';
 
 export { buildListKnowledgeFilesQuery } from './knowledgeFileListQuery';
 
+export interface KBModelPolicy {
+  enabled: boolean;
+  embedding_model_id: string;
+  summary_model_id: string;
+  vision_model_id: string;
+}
+
+export function getKBModelPolicy(): Promise<{ success: boolean; data: KBModelPolicy }> {
+  return get('/api/v1/knowledge-bases/model-policy');
+}
+
 export type KnowledgeBaseActivity = AuditLog;
 
 export interface ListKnowledgeBaseActivityParams {

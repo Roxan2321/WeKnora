@@ -140,6 +140,9 @@ func (s *knowledgeBaseService) CreateKnowledgeBase(ctx context.Context,
 		kb.CreatorID = uid
 	}
 	kb.EnsureDefaults()
+	if err := s.applyCompanyKBModels(ctx, kb); err != nil {
+		return nil, err
+	}
 	applyTenantDefaultStorageProvider(ctx, kb)
 	if err := s.applyAndValidateStorageBackend(ctx, kb); err != nil {
 		return nil, err
@@ -515,6 +518,10 @@ func (s *knowledgeBaseService) UpdateKnowledgeBase(ctx context.Context,
 	}
 
 	changedFields := make([]string, 0, 3)
+	if kb.HasCompanyModels() && !types.IsSystemAdminFromContext(ctx) && config != nil &&
+		config.ImageProcessingConfig.ModelID != "" && config.ImageProcessingConfig.ModelID != types.CompanyVisionModelID {
+		return nil, apperrors.NewForbiddenError("该知识库的视觉模型由公司统一配置")
+	}
 	profileWasEnabled := kb.ProfileConfig.IsEnabled()
 	if kb.Name != name {
 		changedFields = append(changedFields, "name")
@@ -1256,6 +1263,12 @@ func (s *knowledgeBaseService) CopyKnowledgeBase(ctx context.Context,
 			targetKB.CreatorID = uid
 		}
 		targetKB.EnsureDefaults()
+		if types.CompanyKBModelsEnabled() && sourceKB.EmbeddingModelID != types.CompanyEmbeddingModelID {
+			return nil, nil, apperrors.NewBadRequestError("旧模型知识库不能直接复制向量到统一模型知识库，请新建后重新导入资料")
+		}
+		if err := s.applyCompanyKBModels(ctx, targetKB); err != nil {
+			return nil, nil, err
+		}
 		if err := s.repo.CreateKnowledgeBase(ctx, targetKB); err != nil {
 			return nil, nil, err
 		}
@@ -1322,6 +1335,9 @@ func (s *knowledgeBaseService) DuplicateKnowledgeBase(
 		}
 	}
 
+	if err := s.applyCompanyKBModels(ctx, targetKB); err != nil {
+		return nil, err
+	}
 	if err := s.repo.CreateKnowledgeBase(ctx, targetKB); err != nil {
 		return nil, err
 	}

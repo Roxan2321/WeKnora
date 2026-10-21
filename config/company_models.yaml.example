@@ -1,0 +1,34 @@
+# Opt in with KB_MODEL_POLICY=company and BUILTIN_MODELS_CONFIG=<private config path>.
+# Credentials are supplied by the server environment, never the browser.
+builtin_models:
+  - id: builtin-company-embedding
+    name: qwen3.7-text-embedding-flash
+    type: Embedding
+    source: remote
+    parameters:
+      provider: aliyun
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api_key: ${COMPANY_ALIYUN_API_KEY}
+      embedding_parameters:
+        dimension: 1024
+      max_concurrency: 2
+  - id: builtin-company-summary
+    name: qwen3.7-flash
+    type: KnowledgeQA
+    source: remote
+    parameters:
+      provider: aliyun
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api_key: ${COMPANY_ALIYUN_API_KEY}
+      max_concurrency: 2
+  - id: builtin-company-vision
+    name: qwen3-vl-plus
+    type: VLLM
+    source: remote
+    parameters:
+      provider: aliyun
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api_key: ${COMPANY_ALIYUN_API_KEY}
+      interface_type: openai
+      supports_vision: true
+      max_concurrency: 1
