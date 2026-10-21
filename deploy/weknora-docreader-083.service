@@ -1,0 +1,13 @@
+[Unit]
+Description=WeKnora 0.8.3 document parser
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/podman start weknora-docreader-083
+ExecStop=/usr/bin/podman stop -t 30 weknora-docreader-083
+
+[Install]
+WantedBy=multi-user.target
