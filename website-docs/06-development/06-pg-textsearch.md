@@ -22,7 +22,7 @@ DB_SSLMODE=require
 `DB_SSLMODE` 同时应用于业务连接和迁移连接，本地默认 `disable`，公网托管数据库用
 `require` 或配置好证书后的 `verify-full`。
 
-迁移 `000111` 增加可空的 `embeddings.search_content`。启用新引擎后使用
+迁移 `000119` 增加可空的 `embeddings.search_content`，并补齐早期公司 RDS 已占用版本 `111` 时缺失的模型目录表。启用新引擎后使用
 `embeddings_textsearch_idx`，索引配置为 `simple`。写入和查询均复用应用已有的
 Jieba 搜索分词器：保留词频，原始 `content` 和向量不变。此路径可以在
 `pg_textsearch 1.3.1` 上工作，不要求数据库安装 zhparser。

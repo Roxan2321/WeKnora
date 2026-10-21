@@ -79,11 +79,33 @@ func (g *pgRepository) EstimateStorageSize(
 	return totalStorageSize
 }
 
+// upsertBySource makes a re-index of an existing (source_id, source_type)
+// replace the stored row. Callers such as FAQ edits re-index under the old
+// source ID and rely on the new content winning; DO NOTHING kept the stale
+// content and vector.
+var upsertBySource = clause.OnConflict{
+	Columns: []clause.Column{{Name: "source_id"}, {Name: "source_type"}},
+	DoUpdates: clause.AssignmentColumns([]string{
+		"chunk_id", "knowledge_id", "knowledge_base_id", "tag_id",
+		"content", "dimension", "embedding", "is_enabled", "updated_at",
+	}),
+}
+
+func (g *pgRepository) upsertBySource() clause.OnConflict {
+	if !g.textSearch {
+		return upsertBySource
+	}
+	conflict := upsertBySource
+	conflict.DoUpdates = append(append(clause.Set(nil), conflict.DoUpdates...),
+		clause.AssignmentColumns([]string{"search_content"})...)
+	return conflict
+}
+
 // Save stores a single index entry
 func (g *pgRepository) Save(ctx context.Context, indexInfo *types.IndexInfo, additionalParams map[string]any) error {
 	logger.GetLogger(ctx).Debugf("[Postgres] Saving index for source ID: %s", indexInfo.SourceID)
 	embeddingDB := toDBVectorEmbedding(indexInfo, additionalParams, g.textSearch)
-	err := g.db.WithContext(ctx).Create(embeddingDB).Error
+	err := g.db.WithContext(ctx).Clauses(g.upsertBySource()).Create(embeddingDB).Error
 	if err != nil {
 		logger.GetLogger(ctx).Errorf("[Postgres] Failed to save index: %v", err)
 		return err
@@ -97,11 +119,25 @@ func (g *pgRepository) BatchSave(
 	ctx context.Context, indexInfoList []*types.IndexInfo, additionalParams map[string]any,
 ) error {
 	logger.GetLogger(ctx).Infof("[Postgres] Batch saving %d indices", len(indexInfoList))
-	indexInfoDBList := make([]*pgVector, len(indexInfoList))
-	for i := range indexInfoList {
-		indexInfoDBList[i] = toDBVectorEmbedding(indexInfoList[i], additionalParams, g.textSearch)
+	// ON CONFLICT DO UPDATE rejects a statement that touches the same row
+	// twice, so a source repeated in one batch keeps only its last entry.
+	type sourceKey struct {
+		id  string
+		typ int
 	}
-	err := g.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(indexInfoDBList).Error
+	positions := make(map[sourceKey]int, len(indexInfoList))
+	indexInfoDBList := make([]*pgVector, 0, len(indexInfoList))
+	for _, indexInfo := range indexInfoList {
+		row := toDBVectorEmbedding(indexInfo, additionalParams, g.textSearch)
+		key := sourceKey{id: row.SourceID, typ: row.SourceType}
+		if i, ok := positions[key]; ok {
+			indexInfoDBList[i] = row
+			continue
+		}
+		positions[key] = len(indexInfoDBList)
+		indexInfoDBList = append(indexInfoDBList, row)
+	}
+	err := g.db.WithContext(ctx).Clauses(g.upsertBySource()).Create(indexInfoDBList).Error
 	if err != nil {
 		logger.GetLogger(ctx).Errorf("[Postgres] Batch save failed: %v", err)
 		return err
@@ -230,7 +266,7 @@ func (g *pgRepository) KeywordsRetrieve(ctx context.Context,
 			{Column: clause.Column{Name: "score"}, Desc: true},
 		}})
 
-		err = g.db.WithContext(ctx).Clauses(conds...).Debug().
+		err = g.db.WithContext(ctx).Clauses(conds...).
 			Select([]string{
 				"paradedb.score(id) as score",
 				"id",
@@ -522,18 +558,28 @@ func (g *pgRepository) CopyIndices(ctx context.Context,
 		return nil
 	}
 
+	// Only the mapped knowledge is copied (callers clone one document at a
+	// time), so filter on it instead of paging the whole source knowledge
+	// base. Keyset pagination on id keeps pages stable; OFFSET without an
+	// ORDER BY could skip or repeat rows.
+	sourceKnowledgeIDs := make([]string, 0, len(sourceToTargetKBIDMap))
+	for sourceKnowledgeID := range sourceToTargetKBIDMap {
+		sourceKnowledgeIDs = append(sourceKnowledgeIDs, sourceKnowledgeID)
+	}
+
 	// Batch processing parameters
 	batchSize := 500 // Number of records to process per batch
-	offset := 0      // Offset for pagination
+	var lastID uint  // Keyset cursor
 	totalCopied := 0 // Total number of copied records
 
 	for {
 		// Paginated query for source data
 		var sourceVectors []*pgVector
 		if err := g.db.WithContext(ctx).
-			Where("knowledge_base_id = ?", sourceKnowledgeBaseID).
+			Where("knowledge_base_id = ? AND knowledge_id IN ? AND id > ?",
+				sourceKnowledgeBaseID, sourceKnowledgeIDs, lastID).
+			Order("id").
 			Limit(batchSize).
-			Offset(offset).
 			Find(&sourceVectors).Error; err != nil {
 			logger.GetLogger(ctx).Errorf("[Postgres] Failed to query source index data: %v", err)
 			return err
@@ -541,7 +587,7 @@ func (g *pgRepository) CopyIndices(ctx context.Context,
 
 		// If no more data, exit the loop
 		if len(sourceVectors) == 0 {
-			if offset == 0 {
+			if lastID == 0 {
 				logger.GetLogger(ctx).Warnf("[Postgres] No source index data found")
 			}
 			break
@@ -549,8 +595,8 @@ func (g *pgRepository) CopyIndices(ctx context.Context,
 
 		batchCount := len(sourceVectors)
 		logger.GetLogger(ctx).Infof(
-			"[Postgres] Found %d source index data, batch start position: %d",
-			batchCount, offset,
+			"[Postgres] Found %d source index data, batch start after id: %d",
+			batchCount, lastID,
 		)
 
 		// Create target vector index
@@ -603,6 +649,7 @@ func (g *pgRepository) CopyIndices(ctx context.Context,
 				KnowledgeBaseID: targetKnowledgeBaseID, // Update to target knowledge base ID
 				Dimension:       sourceVector.Dimension,
 				Embedding:       sourceVector.Embedding, // Copy the vector embedding directly, avoid recalculation
+				IsEnabled:       sourceVector.IsEnabled,
 			}
 			if g.textSearch && targetVector.SearchContent == nil {
 				content := keywordText(targetVector.Content)
@@ -629,7 +676,7 @@ func (g *pgRepository) CopyIndices(ctx context.Context,
 		}
 
 		// Move to the next batch
-		offset += batchCount
+		lastID = sourceVectors[batchCount-1].ID
 
 		// If the number of returned records is less than the requested size, it means the last page has been reached
 		if batchCount < batchSize {

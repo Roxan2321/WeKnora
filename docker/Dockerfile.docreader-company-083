@@ -1,0 +1,5 @@
+# The deployed 0.8.2 image and v0.8.3 have identical pyproject/uv.lock hashes.
+FROM localhost/weknora-docreader-upgrade:0.8.2
+COPY docreader /app/docreader
+ENTRYPOINT ["/app/.venv/bin/python", "-m", "docreader.container_entrypoint"]
+CMD ["/app/.venv/bin/python", "-m", "docreader.main"]

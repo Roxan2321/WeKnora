@@ -14,13 +14,15 @@ type companyModelStub struct {
 	models map[string]*types.Model
 }
 
-func (s companyModelStub) GetModelByID(_ context.Context, id string) (*types.Model, error) { return s.models[id], nil }
+func (s companyModelStub) GetModelByID(_ context.Context, id string) (*types.Model, error) {
+	return s.models[id], nil
+}
 
 func TestCompanyKBModels(t *testing.T) {
 	svc := &knowledgeBaseService{modelService: companyModelStub{models: map[string]*types.Model{
 		types.CompanyEmbeddingModelID: {IsBuiltin: true, Type: types.ModelTypeEmbedding, Status: types.ModelStatusActive},
-		types.CompanySummaryModelID: {IsBuiltin: true, Type: types.ModelTypeKnowledgeQA, Status: types.ModelStatusActive},
-		types.CompanyVisionModelID: {IsBuiltin: true, Type: types.ModelTypeVLLM, Status: types.ModelStatusActive},
+		types.CompanySummaryModelID:   {IsBuiltin: true, Type: types.ModelTypeKnowledgeQA, Status: types.ModelStatusActive},
+		types.CompanyVisionModelID:    {IsBuiltin: true, Type: types.ModelTypeVLLM, Status: types.ModelStatusActive},
 	}}}
 	t.Setenv("KB_MODEL_POLICY", "")
 	legacy := &types.KnowledgeBase{EmbeddingModelID: "legacy", SummaryModelID: "old-summary"}
@@ -45,4 +47,14 @@ func TestCompanyKBModels(t *testing.T) {
 	require.Equal(t, "temporary", temporary.EmbeddingModelID)
 	svc.modelService = companyModelStub{}
 	require.Error(t, svc.applyCompanyKBModels(context.Background(), &types.KnowledgeBase{}))
+}
+
+func TestCompanyVisionUpdate(t *testing.T) {
+	require.NoError(t, validateCompanyVisionUpdate(nil, nil))
+	require.NoError(t, validateCompanyVisionUpdate(&types.KnowledgeBaseConfig{}, nil))
+	require.NoError(t, validateCompanyVisionUpdate(nil, &types.VLMConfig{ModelID: types.CompanyVisionModelID}))
+	require.Error(t, validateCompanyVisionUpdate(nil, &types.VLMConfig{ModelID: "other"}))
+	require.Error(t, validateCompanyVisionUpdate(&types.KnowledgeBaseConfig{
+		ImageProcessingConfig: &types.ImageProcessingConfig{ModelID: "other"},
+	}, nil))
 }

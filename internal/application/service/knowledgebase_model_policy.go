@@ -7,11 +7,25 @@ import (
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
+func validateCompanyVisionUpdate(config *types.KnowledgeBaseConfig, vlm *types.VLMConfig) error {
+	if config != nil && config.ImageProcessingConfig != nil &&
+		config.ImageProcessingConfig.ModelID != "" && config.ImageProcessingConfig.ModelID != types.CompanyVisionModelID {
+		return apperrors.NewForbiddenError("该知识库的视觉模型由公司统一配置")
+	}
+	if vlm != nil && vlm.ModelID != "" && vlm.ModelID != types.CompanyVisionModelID {
+		return apperrors.NewForbiddenError("该知识库的视觉模型由公司统一配置")
+	}
+	return nil
+}
+
 func (s *knowledgeBaseService) applyCompanyKBModels(ctx context.Context, kb *types.KnowledgeBase) error {
 	if !types.CompanyKBModelsEnabled() || kb.IsTemporary {
 		return nil
 	}
-	for _, binding := range []struct{ id string; kind types.ModelType }{
+	for _, binding := range []struct {
+		id   string
+		kind types.ModelType
+	}{
 		{types.CompanyEmbeddingModelID, types.ModelTypeEmbedding},
 		{types.CompanySummaryModelID, types.ModelTypeKnowledgeQA},
 		{types.CompanyVisionModelID, types.ModelTypeVLLM},
