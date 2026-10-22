@@ -20,7 +20,8 @@ var listDocumentsTool = BaseTool{
 	name: ToolListDocuments,
 	description: "List the documents inside one knowledge base, newest first, with pagination and an optional " +
 		"title filter.\nUse it to see what a knowledge base contains or to find a document by name; each entry " +
-		"carries the dN handle that read_document accepts.",
+		"carries the dN handle that read_document accepts. Includes unpublished manual drafts: " +
+		"find their titles here, then use read_document to read them without publishing or indexing.",
 	schema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -107,7 +108,7 @@ func (t *ListDocumentsTool) Execute(ctx context.Context, args json.RawMessage) (
 	}
 	keyword := strings.TrimSpace(input.Keyword)
 
-	filtered, total, err := t.listScoped(ctx, kbID, keyword, page, pageSize)
+	filtered, total, err := t.ListScoped(ctx, kbID, keyword, page, pageSize)
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to list documents: %v", err)}, err
 	}
@@ -185,14 +186,19 @@ func (t *ListDocumentsTool) Execute(ctx context.Context, args json.RawMessage) (
 // one case where the union has to be paged in memory.
 const listDocumentsScopeCap = 1000
 
-// listScoped returns one page of the documents the turn may read, with a
+// ListScoped returns one page of the documents the turn may read, with a
 // total that counts only those documents. A pinned @tag scope is pushed into
 // the database filter; pinned @file documents are loaded directly. Filtering
 // after paging would report totals for the whole base and leave holes in the
 // page.
-func (t *ListDocumentsTool) listScoped(
+func (t *ListDocumentsTool) ListScoped(
 	ctx context.Context, kbID, keyword string, page, pageSize int,
 ) ([]*types.Knowledge, int64, error) {
+	if err := validateKnowledgeBaseIDsInSearchTargets(t.searchTargets, []string{kbID}); err != nil {
+		return nil, 0, err
+	}
+	page = max(page, 1)
+	pageSize = min(max(pageSize, 1), listDocumentsMaxPageSize)
 	tenantID := t.searchTargets.GetTenantIDForKB(kbID)
 	// Documents live under the knowledge base owner, which may differ from the
 	// caller's tenant for organization-shared bases.

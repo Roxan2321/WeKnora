@@ -26,6 +26,8 @@ const (
 var readDocumentTool = BaseTool{
 	name: ToolReadDocument,
 	description: "Read a document from the knowledge bases in scope: its metadata plus chunks in document order.\n" +
+		"Unpublished manual drafts are read directly, without publishing or indexing. For drafts, offset and " +
+		"limit count Unicode characters (default 4000, max 8000); continue with next_offset.\n" +
 		"id is a dN document handle (reads a page of chunks starting at offset) or a cN chunk handle (reads that " +
 		"chunk; set context to include neighbouring chunks on each side).\n" +
 		"query finds passages inside the document: matching chunks come back with one chunk of context on each " +
@@ -52,9 +54,9 @@ var readDocumentTool = BaseTool{
     },
     "limit": {
       "type": "integer",
-      "description": "Chunks per page (default 20, max 100)",
+      "description": "Published documents: chunks per page (default 20, max 100). Manual drafts: Unicode characters (default 4000, max 8000).",
       "minimum": 1,
-      "maximum": 100
+      "maximum": 8000
     },
     "query": {
       "type": "string",
@@ -155,6 +157,9 @@ func (t *ReadDocumentTool) Execute(ctx context.Context, args json.RawMessage) (*
 	knowledge, chunk, err := t.resolveTarget(ctx, id)
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error()}, err
+	}
+	if knowledge.IsManual() && knowledge.ParseStatus == types.ManualKnowledgeStatusDraft {
+		return t.readDraft(ctx, knowledge, input)
 	}
 
 	var matchers []*regexp.Regexp
