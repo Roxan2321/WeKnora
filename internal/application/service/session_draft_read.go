@@ -15,6 +15,17 @@ import (
 
 var draftTitleDate = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
 
+func (s *sessionService) attachSelectedDraftContext(ctx context.Context, cm *types.ChatManage) {
+	if len(cm.SearchTargets) == 0 {
+		return
+	}
+	listing, body := s.buildKBDocumentContext(ctx, cm)
+	cm.DirectDraftContext = body
+	if body == "" && strings.Contains(cm.Query, "知识库") && (strings.Contains(cm.Query, "有什么") || strings.Contains(cm.Query, "有哪些")) && listing != "" {
+		cm.DirectDraftContext = "Authorized document title listing (metadata only; do not claim to have read these bodies):\n" + listing
+	}
+}
+
 func draftTitleMentioned(query, title string) bool {
 	query, title = strings.ToLower(query), strings.ToLower(title)
 	if title == "" {
@@ -123,6 +134,10 @@ func (s *sessionService) buildKBDocumentContext(ctx context.Context, cm *types.C
 					continue
 				}
 				mentioned := draftTitleMentioned(cm.Query, title)
+				// k is already constrained by the authorized KB/document/tag scope.
+				for _, kid := range cm.KnowledgeIDs {
+					mentioned = mentioned || kid == k.ID
+				}
 				for _, target := range cm.SearchTargets {
 					if target == nil || target.Type != types.SearchTargetTypeKnowledge || target.KnowledgeBaseID != id {
 						continue
@@ -134,7 +149,7 @@ func (s *sessionService) buildKBDocumentContext(ctx context.Context, cm *types.C
 				if !mentioned {
 					continue
 				}
-				args, _ := json.Marshal(tools.ReadDocumentInput{ID: k.ID, Limit: 4000})
+				args, _ := json.Marshal(tools.ReadDocumentInput{ID: k.ID, Limit: 4000, DraftQuestion: cm.Query})
 				result, err := reader.Execute(tools.WithOutputBudget(ctx, 6000), args)
 				if err == nil && result != nil && result.Success {
 					bodies.WriteString(result.Output)

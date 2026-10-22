@@ -115,13 +115,17 @@ func (p *PluginIntoChatMessage) OnEvent(ctx context.Context,
 		}
 
 		if tpl := chatManage.SummaryConfig.ContextTemplate; tpl != "" {
+			chatManage.RenderedContexts = chatManage.DirectDraftContext
 			chatManage.UserContent = types.RenderPromptPlaceholders(tpl, types.PlaceholderValues{
 				"query":    userContent,
-				"contexts": "",
+				"contexts": chatManage.DirectDraftContext,
 				"language": chatManage.Language,
 			})
 		} else {
 			chatManage.UserContent = userContent
+			if chatManage.DirectDraftContext != "" {
+				chatManage.UserContent += "\n\n" + chatManage.DirectDraftContext
+			}
 		}
 
 		pipelineInfo(ctx, "IntoChatMessage", "no_search_with_template", map[string]interface{}{
@@ -182,6 +186,10 @@ func (p *PluginIntoChatMessage) OnEvent(ctx context.Context,
 		}
 	}
 
+	if chatManage.DirectDraftContext != "" {
+		contextsBuilder.WriteString("\n")
+		contextsBuilder.WriteString(chatManage.DirectDraftContext)
+	}
 	chatManage.RenderedContexts = contextsBuilder.String()
 
 	// Replace placeholders in context template

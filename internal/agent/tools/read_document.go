@@ -85,6 +85,8 @@ type ReadDocumentInput struct {
 	Query   string `json:"query,omitempty"`
 	Regex   bool   `json:"regex,omitempty"`
 	Context int    `json:"context,omitempty"`
+	// Ordinary QA supplies the question without changing the tool's literal Query semantics.
+	DraftQuestion string `json:"draft_question,omitempty"`
 }
 
 // ReadDocumentTool reads document metadata and chunks by page, by chunk

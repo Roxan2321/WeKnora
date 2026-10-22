@@ -181,6 +181,8 @@ type PipelineState struct {
 	GraphResult      *GraphData        `json:"-"`
 	UserContent      string            `json:"-"`
 	RenderedContexts string            `json:"-"`
+	// Server-authorized draft excerpts; transient, never published or indexed.
+	DirectDraftContext string `json:"-"`
 	// ContextImages are retrieved images, as data URIs, shown to a vision
 	// chat model beside the contexts they belong to; see INTO_CHAT_MESSAGE.
 	ContextImages []string `json:"-"`
@@ -348,6 +350,7 @@ func (c *ChatManage) Clone() *ChatManage {
 			MemoryPrompt:         c.MemoryPrompt,
 			UsedMemories:         append(UsedMemories(nil), c.UsedMemories...),
 			RenderedContexts:     c.RenderedContexts,
+			DirectDraftContext:   c.DirectDraftContext,
 			ContextImages:        slices.Clone(c.ContextImages),
 			ContextImageChunkIDs: slices.Clone(c.ContextImageChunkIDs),
 			Entity:               entity,

@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	chatpipeline "github.com/Tencent/WeKnora/internal/application/service/chat_pipeline"
+	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/stretchr/testify/require"
@@ -14,6 +17,47 @@ type draftReadService struct {
 	rows       []*types.Knowledge
 	reads      int
 	listTenant uint64
+}
+
+func TestSelectedDraftReachesQuickQAModelWhenIntentSkipsRetrieval(t *testing.T) {
+	for _, query := range []string{"1", "这篇", "这篇草稿里有", "读取用户甲的草稿", "读取前五条圆通会员福利官-可乐发送的消息"} {
+		t.Run(query, func(t *testing.T) {
+			k := &types.Knowledge{ID: "selected", KnowledgeBaseID: "shared", TenantID: 7, Type: "manual", ParseStatus: "draft", EnableStatus: "disabled", Title: "WeChat Log - 用户甲"}
+			require.NoError(t, k.SetManualMetadata(types.NewManualKnowledgeMetadata("DRAFT_BODY_REACHED_MODEL", "draft", 1)))
+			if strings.Contains(query, "可乐") {
+				content := "## 10:00:00 +08:00 - Incoming\n\n- Conversation: 腾讯新闻\n- Sender: 腾讯新闻\n\n~~~text\n" + strings.Repeat("未选中的新闻", 4000) + "\n~~~\n\n## 11:00:00 +08:00 - Incoming\n\n- Conversation: T504\n- Sender: 圆通会员福利官-可乐\n\n~~~text\nDRAFT_BODY_REACHED_MODEL\n~~~\n"
+				require.NoError(t, k.SetManualMetadata(types.NewManualKnowledgeMetadata(content, "draft", 1)))
+			}
+			f := &draftReadService{rows: []*types.Knowledge{k}}
+			s := &sessionService{knowledgeService: f, chunkService: struct{ interfaces.ChunkService }{}}
+			cm := &types.ChatManage{PipelineRequest: types.PipelineRequest{Query: query, ChatModelID: "capture", KnowledgeIDs: []string{k.ID}, SearchTargets: types.SearchTargets{{Type: types.SearchTargetTypeKnowledgeBase, KnowledgeBaseID: "shared", TenantID: 7}}, SummaryConfig: types.SummaryConfig{Prompt: "Use supplied reference materials.", ContextTemplate: "Reference materials:\n{{contexts}}\nQuestion: {{query}}"}}}
+			s.attachSelectedDraftContext(context.Background(), cm)
+			if query == "读取用户甲的草稿" {
+				cm.KnowledgeIDs = nil
+				s.attachSelectedDraftContext(context.Background(), cm)
+			}
+			cm = cm.Clone()
+			cm.Intent = types.IntentFollowUp
+			cm.EventBus = event.NewEventBus().AsEventBusInterface()
+			require.False(t, cm.NeedsRetrieval())
+			manager := chatpipeline.NewEventManager()
+			into := chatpipeline.NewPluginIntoChatMessage(manager, nil, nil)
+			model := &captureChatModel{}
+			completion := chatpipeline.NewPluginChatCompletionStream(manager, &stubModelService{chatModel: model})
+			err := into.OnEvent(context.Background(), types.INTO_CHAT_MESSAGE, cm, func() *chatpipeline.PluginError {
+				return completion.OnEvent(context.Background(), types.CHAT_COMPLETION_STREAM, cm, func() *chatpipeline.PluginError { return nil })
+			})
+			require.Nil(t, err)
+			require.NotEmpty(t, model.lastMessages)
+			require.Contains(t, model.lastMessages[len(model.lastMessages)-1].Content, "DRAFT_BODY_REACHED_MODEL")
+			require.Contains(t, cm.RenderedContexts, "DRAFT_BODY_REACHED_MODEL")
+			if strings.Contains(query, "可乐") {
+				require.NotContains(t, cm.RenderedContexts, "未选中的新闻")
+			}
+			require.Equal(t, "draft", k.ParseStatus)
+			require.Equal(t, "disabled", k.EnableStatus)
+		})
+	}
 }
 
 func (f *draftReadService) GetKnowledgeByIDOnly(_ context.Context, id string) (*types.Knowledge, error) {
